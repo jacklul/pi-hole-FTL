@@ -52,7 +52,8 @@ static int api_list_read(struct ftl_conn *api,
 		}
 		else if(listtype == GRAVITY_ADLISTS ||
 		        listtype == GRAVITY_ADLISTS_BLOCK ||
-		        listtype == GRAVITY_ADLISTS_ALLOW)
+		        listtype == GRAVITY_ADLISTS_ALLOW ||
+                listtype == GRAVITY_BULKLISTS)
 		{
 			JSON_COPY_STR_TO_OBJECT(row, "address", table.address);
 			JSON_COPY_STR_TO_OBJECT(row, "comment", table.comment);
@@ -126,13 +127,19 @@ static int api_list_read(struct ftl_conn *api,
 		// Properties added in https://github.com/pi-hole/pi-hole/pull/3951
 		if(listtype == GRAVITY_ADLISTS ||
 		   listtype == GRAVITY_ADLISTS_BLOCK ||
-		   listtype == GRAVITY_ADLISTS_ALLOW)
+		   listtype == GRAVITY_ADLISTS_ALLOW ||
+           listtype == GRAVITY_BULKLISTS)
 		{
 			JSON_REF_STR_IN_OBJECT(row, "type", table.type);
 			JSON_ADD_NUMBER_TO_OBJECT(row, "date_updated", table.date_updated);
-			JSON_ADD_NUMBER_TO_OBJECT(row, "number", table.number);
-			JSON_ADD_NUMBER_TO_OBJECT(row, "invalid_domains", table.invalid_domains);
-			JSON_ADD_NUMBER_TO_OBJECT(row, "abp_entries", table.abp_entries);
+
+            // Bulk lists do not contain stats fields
+            if (listtype != GRAVITY_BULKLISTS) {
+                JSON_ADD_NUMBER_TO_OBJECT(row, "number", table.number);
+                JSON_ADD_NUMBER_TO_OBJECT(row, "invalid_domains", table.invalid_domains);
+                JSON_ADD_NUMBER_TO_OBJECT(row, "abp_entries", table.abp_entries);
+            }
+
 			JSON_ADD_NUMBER_TO_OBJECT(row, "status", table.status);
 		}
 
@@ -151,6 +158,8 @@ static int api_list_read(struct ftl_conn *api,
 		        listtype == GRAVITY_ADLISTS_BLOCK ||
 		        listtype == GRAVITY_ADLISTS_ALLOW)
 			objname = "lists";
+		else if(listtype == GRAVITY_BULKLISTS)
+			objname = "bulklists";
 		else if(listtype == GRAVITY_CLIENTS)
 			objname = "clients";
 		else // domainlists
@@ -262,6 +271,13 @@ static int api_list_write(struct ftl_conn *api,
 			case GRAVITY_ADLISTS:
 			case GRAVITY_ADLISTS_BLOCK:
 			case GRAVITY_ADLISTS_ALLOW:
+            case GRAVITY_BULKLISTS:
+            case GRAVITY_BULKLISTS_ADLISTS_BLOCK:
+            case GRAVITY_BULKLISTS_ADLISTS_ALLOW:
+            case GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT:
+            case GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT:
+            case GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX:
+            case GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX:
 			{
 				cJSON *json_address = cJSON_GetObjectItemCaseSensitive(api->payload.json, "address");
 				if(cJSON_IsString(json_address) && strlen(json_address->valuestring) > 0)
@@ -325,6 +341,38 @@ static int api_list_write(struct ftl_conn *api,
 			                       NULL);
 		}
 	}
+    else if(listtype == GRAVITY_BULKLISTS)
+	{
+		cJSON *json_type = cJSON_GetObjectItemCaseSensitive(api->payload.json, "type");
+		if(cJSON_IsString(json_type) && strlen(json_type->valuestring) > 0)
+			if(strcasecmp(json_type->valuestring, "list_block") == 0)
+				row.type_int = BULKLIST_ADLISTS_BLOCK;
+            else if(strcasecmp(json_type->valuestring, "list_allow") == 0)
+				row.type_int = BULKLIST_ADLISTS_ALLOW;
+			else if(strcasecmp(json_type->valuestring, "exact_deny") == 0)
+				row.type_int = BULKLIST_DOMAINLIST_DENY_EXACT;
+			else if(strcasecmp(json_type->valuestring, "exact_allow") == 0)
+				row.type_int = BULKLIST_DOMAINLIST_ALLOW_EXACT;
+			else if(strcasecmp(json_type->valuestring, "regex_deny") == 0)
+				row.type_int = BULKLIST_DOMAINLIST_DENY_REGEX;
+			else if(strcasecmp(json_type->valuestring, "regex_allow") == 0)
+				row.type_int = BULKLIST_DOMAINLIST_ALLOW_REGEX;
+			else
+			{
+				// Invalid type parameter
+				return send_json_error(api, 400,
+				                       "bad_request",
+				                       "Invalid request: Invalid type parameter (should be either \"list_block\", \"list_allow\", \"exact_deny\", \"exact_allow\", \"regex_deny\", \"regex_allow\")",
+				                       api->request->query_string);
+			}
+		else
+		{
+			return send_json_error(api, 400,
+			                       "bad_request",
+			                       "Invalid request: No valid item \"type\" in payload",
+			                       NULL);
+		}
+    }
 	else if(listtype == GRAVITY_ADLISTS_BLOCK)
 		row.type_int = ADLIST_BLOCK;
 	else if(listtype == GRAVITY_ADLISTS_ALLOW)
@@ -599,6 +647,47 @@ static int api_list_remove(struct ftl_conn *api,
 		cJSON_AddItemToArray(array, obj);
 		allocated_json = true;
 	}
+    else if(listtype == GRAVITY_BULKLISTS_ADLISTS_BLOCK ||
+	   listtype == GRAVITY_BULKLISTS_ADLISTS_ALLOW ||
+	   listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT ||
+	   listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT ||
+	   listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX ||
+	   listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX)
+	{
+		int type = -1;
+		switch (listtype)
+		{
+			case GRAVITY_BULKLISTS_ADLISTS_BLOCK:
+				type = BULKLIST_ADLISTS_BLOCK;
+				break;
+			case GRAVITY_BULKLISTS_ADLISTS_ALLOW:
+				type = BULKLIST_ADLISTS_ALLOW;
+				break;
+			case GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT:
+				type = BULKLIST_DOMAINLIST_DENY_EXACT;
+				break;
+			case GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT:
+				type = BULKLIST_DOMAINLIST_ALLOW_EXACT;
+				break;
+			case GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX:
+				type = BULKLIST_DOMAINLIST_DENY_REGEX;
+				break;
+			case GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX:
+				type = BULKLIST_DOMAINLIST_ALLOW_REGEX;
+				break;
+			default:
+				break;
+		}
+
+		// Create new JSON array with the item and type:
+		// array = [{"item": "example.com", "type": 0}]
+		array = cJSON_CreateArray();
+		cJSON *obj = cJSON_CreateObject();
+		cJSON_AddItemToObject(obj, "item", cJSON_CreateStringReference(item));
+		cJSON_AddItemToObject(obj, "type", cJSON_CreateNumber(type));
+		cJSON_AddItemToArray(array, obj);
+		allocated_json = true;
+    }
 	else if(isBatchDelete && listtype == GRAVITY_DOMAINLIST_ALL_ALL)
 	{
 		// Loop over all items and parse type/kind for each item
@@ -653,6 +742,84 @@ static int api_list_remove(struct ftl_conn *api,
 					type = 1;
 				else if(strcasecmp(json_kind->valuestring, "regex") == 0)
 					type = 3;
+			}
+
+			// Check if type/kind combination is valid
+			if(type == -1)
+			{
+				return send_json_error(api, 400,
+				                       "bad_request",
+				                       "Invalid request: Batch delete requires an valid combination of \"type\" and \"kind\" for each object",
+				                       NULL);
+			}
+
+			// Replace type/kind with integer type
+			// array = [{"item": "example.com", "type": 0}]
+			cJSON_DeleteItemFromObject(it, "type");
+			cJSON_DeleteItemFromObject(it, "kind");
+			cJSON_AddNumberToObject(it, "type", type);
+		}
+	}
+    else if(isBatchDelete && listtype == GRAVITY_BULKLISTS)
+	{
+		// Loop over all items and parse type/kind for each item
+		cJSON *it = NULL;
+		cJSON_ArrayForEach(it, array)
+		{
+			if(!cJSON_IsObject(it))
+			{
+				return send_json_error(api, 400,
+				                       "bad_request",
+				                       "Invalid request: Batch delete requires an array of objects",
+				                       NULL);
+			}
+
+			// Check if item is a string
+			cJSON *json_item = cJSON_GetObjectItemCaseSensitive(it, "item");
+			if(!cJSON_IsString(json_item))
+			{
+				return send_json_error(api, 400,
+				                       "bad_request",
+				                       "Invalid request: Batch delete requires an array of objects with \"item\" as string",
+				                       NULL);
+			}
+
+			// Check if type and kind are both present and strings
+			cJSON *json_type = cJSON_GetObjectItemCaseSensitive(it, "type");
+			cJSON *json_kind = cJSON_GetObjectItemCaseSensitive(it, "kind");
+			if(!cJSON_IsString(json_type) || !cJSON_IsString(json_kind))
+			{
+				return send_json_error(api, 400,
+				                       "bad_request",
+				                       "Invalid request: Batch delete requires an array of objects with \"type\" and \"kind\" as string",
+				                       NULL);
+			}
+
+			// Parse type and kind
+			// 0 = adlist block
+			// 1 = adlist allow
+			// 3 = domainlist exact deny
+			// 2 = domainlist exact allow
+			// 4 = domainlist regex deny
+			// 5 = domainlist regex allow
+			int type = -1;
+			if(strcasecmp(json_type->valuestring, "allow") == 0)
+			{
+				if(strcasecmp(json_kind->valuestring, "list") == 0)
+					type = BULKLIST_ADLISTS_ALLOW;
+				else if(strcasecmp(json_kind->valuestring, "exact") == 0)
+					type = BULKLIST_DOMAINLIST_ALLOW_EXACT;
+				else if(strcasecmp(json_kind->valuestring, "regex") == 0)
+					type = BULKLIST_DOMAINLIST_ALLOW_REGEX;
+			}
+			else if(strcasecmp(json_type->valuestring, "deny") == 0)
+			{
+				if(strcasecmp(json_kind->valuestring, "list") == 0)
+					type = BULKLIST_ADLISTS_BLOCK;
+				else if(strcasecmp(json_kind->valuestring, "exact") == 0)
+					type = BULKLIST_DOMAINLIST_DENY_EXACT;
+				else if(strcasecmp(json_kind->valuestring, "regex") == 0)
+					type = BULKLIST_DOMAINLIST_DENY_REGEX;
 			}
 
 			// Check if type/kind combination is valid
@@ -824,6 +991,17 @@ int api_list(struct ftl_conn *api)
 		can_modify = true;
 		batchDelete = true;
 	}
+	else if((api->item = startsWith("/api/bulklists", api)) != NULL)
+	{
+		listtype = GRAVITY_BULKLISTS;
+		can_modify = true;
+	}
+	else if((api->item = startsWith("/api/bulklists:batchDelete", api)) != NULL)
+	{
+		listtype = GRAVITY_BULKLISTS;
+		can_modify = true;
+		batchDelete = true;
+	}
 	else
 	{
 			return send_json_error(api, 400,
@@ -832,7 +1010,7 @@ int api_list(struct ftl_conn *api)
 			                       api->request->local_uri_raw);
 	}
 
-	// If this is a request for a list, we check if there is a request
+	// If this is a request for a adlist, we check if there is a request
 	// parameter narrowing down which kind of list. If so, we modify the
 	// list type accordingly
 	if(listtype == GRAVITY_ADLISTS && api->request->query_string != NULL)
@@ -851,6 +1029,38 @@ int api_list(struct ftl_conn *api)
 				return send_json_error(api, 400,
 				                       "bad_request",
 				                       "Invalid request: Invalid type parameter (should be either \"allow\" or \"block\")",
+				                       api->request->query_string);
+			}
+		}
+	}
+    
+	// If this is a request for a bulklist, we check if there is a request
+	// parameter narrowing down which kind of list. If so, we modify the
+	// list type accordingly
+    if(listtype == GRAVITY_BULKLISTS && api->request->query_string != NULL)
+	{
+		// Check if there is a type parameter
+		char typestr[16] = { 0 };
+		if(get_string_var(api->request->query_string, "type", typestr, sizeof(typestr)) > 0)
+		{
+			if(strcasecmp(typestr, "list_block") == 0)
+				listtype = GRAVITY_BULKLISTS_ADLISTS_BLOCK;
+			else if(strcasecmp(typestr, "list_allow") == 0)
+				listtype = GRAVITY_BULKLISTS_ADLISTS_ALLOW;
+			else if(strcasecmp(typestr, "exact_deny") == 0)
+				listtype = GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT;
+			else if(strcasecmp(typestr, "exact_allow") == 0)
+				listtype = GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT;
+			else if(strcasecmp(typestr, "regex_deny") == 0)
+				listtype = GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX;
+			else if(strcasecmp(typestr, "regex_allow") == 0)
+				listtype = GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX;
+			else
+			{
+				// Invalid type parameter
+				return send_json_error(api, 400,
+				                       "bad_request",
+				                       "Invalid request: Invalid type parameter (should be either \"list_block\", \"list_allow\", \"exact_deny\", \"exact_allow\", \"regex_deny\", \"regex_allow\")",
 				                       api->request->query_string);
 			}
 		}

@@ -539,6 +539,7 @@ static int get_ftl_obj(struct ftl_conn *api, cJSON *ftl)
 	const int db_gravity = counters->database.gravity;
 	const int db_groups = counters->database.groups;
 	const int db_lists = counters->database.lists;
+	const int db_bulklists = counters->database.bulklists;
 	const int db_clients = counters->database.clients;
 	const int db_allowed = counters->database.domains.allowed;
 	const int db_denied = counters->database.domains.denied;
@@ -562,6 +563,7 @@ static int get_ftl_obj(struct ftl_conn *api, cJSON *ftl)
 	JSON_ADD_NUMBER_TO_OBJECT(database, "gravity", db_gravity);
 	JSON_ADD_NUMBER_TO_OBJECT(database, "groups", db_groups);
 	JSON_ADD_NUMBER_TO_OBJECT(database, "lists", db_lists);
+	JSON_ADD_NUMBER_TO_OBJECT(database, "bulklists", db_bulklists);
 	JSON_ADD_NUMBER_TO_OBJECT(database, "clients", db_clients);
 
 	cJSON *domains = JSON_NEW_OBJECT();

@@ -1094,6 +1094,9 @@ int gravityDB_count(const enum gravity_tables list)
 		case ADLISTS_TABLE:
 			querystr = "SELECT COUNT(1) FROM adlist WHERE enabled != 0";
 			break;
+		case BULKLISTS_TABLE:
+			querystr = "SELECT COUNT(1) FROM bulklist WHERE enabled != 0";
+			break;
 		case DENIED_DOMAINS_TABLE:
 			querystr = "SELECT COUNT(1) FROM domainlist WHERE (type = 0 OR type = 2) AND enabled != 0";
 			break;
@@ -1553,6 +1556,7 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 
 	switch (listtype)
 	{
+        // domainlist
 		case GRAVITY_DOMAINLIST_ALLOW_EXACT:
 			row->type_int = 0;
 			break;
@@ -1572,6 +1576,26 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 			row->type_int = 1;
 			break;
 
+        // bulk lists
+        case GRAVITY_BULKLISTS_ADLISTS_BLOCK:
+			row->type_int = BULKLIST_ADLISTS_BLOCK;
+			break;
+        case GRAVITY_BULKLISTS_ADLISTS_ALLOW:
+			row->type_int = BULKLIST_ADLISTS_ALLOW;
+			break;
+        case GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT:
+			row->type_int = BULKLIST_DOMAINLIST_DENY_EXACT;
+			break;
+        case GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT:
+			row->type_int = BULKLIST_DOMAINLIST_ALLOW_EXACT;
+			break;
+        case GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX:
+			row->type_int = BULKLIST_DOMAINLIST_DENY_REGEX;
+			break;
+        case GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX:
+			row->type_int = BULKLIST_DOMAINLIST_ALLOW_REGEX;
+			break;
+
 		// Nothing to be done for these tables
 		case GRAVITY_GROUPS:
 		case GRAVITY_ADLISTS:
@@ -1586,6 +1610,7 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 		case GRAVITY_DOMAINLIST_ALL_EXACT:
 		case GRAVITY_DOMAINLIST_ALL_REGEX:
 		case GRAVITY_DOMAINLIST_ALL_ALL:
+		case GRAVITY_BULKLISTS:
 			return false;
 	}
 
@@ -1599,15 +1624,24 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 		{
 			querystr = "INSERT INTO \"group\" (name,enabled,description) VALUES (:item,:enabled,:comment);";
 		}
+		else if(listtype == GRAVITY_BULKLISTS_ADLISTS_BLOCK ||
+                listtype == GRAVITY_BULKLISTS_ADLISTS_ALLOW ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX)
+		{
+			querystr = "INSERT INTO bulklist (address,enabled,comment,type) VALUES (:item,:enabled,:comment,:type);";
+		}
+		else if(listtype == GRAVITY_CLIENTS)
+		{
+			querystr = "INSERT INTO client (ip,comment) VALUES (:item,:comment);";
+		}
 		else if(listtype == GRAVITY_ADLISTS ||
 		        listtype == GRAVITY_ADLISTS_BLOCK ||
 		        listtype == GRAVITY_ADLISTS_ALLOW)
 		{
 			querystr = "INSERT INTO adlist (address,enabled,comment,type) VALUES (:item,:enabled,:comment,:type);";
-		}
-		else if(listtype == GRAVITY_CLIENTS)
-		{
-			querystr = "INSERT INTO client (ip,comment) VALUES (:item,:comment);";
 		}
 		else // domainlist
 		{
@@ -1618,6 +1652,7 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 	{	// Create new or replace existing entry, no error if existing
 		// We UPSERT here to avoid violating FOREIGN KEY constraints
 		if(listtype == GRAVITY_GROUPS)
+        {
 			if(row->name == NULL)
 			{
 				// Name is not to be changed
@@ -1629,17 +1664,34 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 				querystr = "UPDATE \"group\" SET name = :name, enabled = :enabled, description = :comment "
 				           "WHERE name = :item";
 			}
+        }
 		else if(listtype == GRAVITY_ADLISTS ||
 		        listtype == GRAVITY_ADLISTS_BLOCK ||
 		        listtype == GRAVITY_ADLISTS_ALLOW)
+        {
 			querystr = "INSERT INTO adlist (address,enabled,comment,type) VALUES (:item,:enabled,:comment,:type) "\
 			           "ON CONFLICT(address,type) DO UPDATE SET enabled = :enabled, comment = :comment, type = :type;";
+        }
 		else if(listtype == GRAVITY_CLIENTS)
+        {
 			querystr = "INSERT INTO client (ip,comment) VALUES (:item,:comment) "\
 			           "ON CONFLICT(ip) DO UPDATE SET comment = :comment;";
+        }
+		else if(listtype == GRAVITY_BULKLISTS_ADLISTS_BLOCK ||
+                listtype == GRAVITY_BULKLISTS_ADLISTS_ALLOW ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX)
+		{
+			querystr = "INSERT INTO bulklist (address,enabled,comment,type) VALUES (:item,:enabled,:comment,:oldtype) "\
+			           "ON CONFLICT(address,type) DO UPDATE SET enabled = :enabled, comment = :comment, type = :type;";
+		}
 		else // domainlist
+        {
 			querystr = "INSERT INTO domainlist (domain,type,enabled,comment) VALUES (:item,:oldtype,:enabled,:comment) "\
 			           "ON CONFLICT(domain,type) DO UPDATE SET type = :type, enabled = :enabled, comment = :comment;";
+        }
 	}
 
 	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
@@ -1717,7 +1769,42 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 			sqlite3_finalize(stmt);
 			return false;
 		}
-		else
+		else if(listtype == GRAVITY_BULKLISTS_ADLISTS_BLOCK ||
+                listtype == GRAVITY_BULKLISTS_ADLISTS_ALLOW ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX ||
+                listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX)
+        {
+            if(strcasecmp("block", row->type) == 0 &&
+			   strcasecmp("list", row->kind) == 0)
+                oldtype = 0;
+			else if(strcasecmp("allow", row->type) == 0 &&
+					strcasecmp("list", row->kind) == 0)
+                oldtype = 1;
+			else if(strcasecmp("deny", row->type) == 0 &&
+					strcasecmp("exact", row->kind) == 0)
+                oldtype = 2;
+			else if(strcasecmp("allow", row->type) == 0 &&
+			        strcasecmp("exact", row->kind) == 0)
+                oldtype = 3;
+			else if(strcasecmp("deny", row->type) == 0 &&
+					strcasecmp("regex", row->kind) == 0)
+                oldtype = 4;
+			else if(strcasecmp("allow", row->type) == 0 &&
+			        strcasecmp("regex", row->kind) == 0)
+                oldtype = 5;
+			else
+			{
+				*message = "Cannot interpret type/kind";
+				log_err("gravityDB_addToTable(%d, %s): Failed to identify type=\"%s\", kind=\"%s\"",
+				        row->type_int, row->item, row->type, row->kind);
+				sqlite3_reset(stmt);
+				sqlite3_finalize(stmt);
+				return false;
+			}
+        }
+		else // domainlist
 		{
 			if(strcasecmp("allow", row->type) == 0 &&
 			   strcasecmp("exact", row->kind) == 0)
@@ -1838,7 +1925,14 @@ bool gravityDB_delFromTable(const enum gravity_list_type listtype, const cJSON* 
 	                     listtype == GRAVITY_DOMAINLIST_ALL_ALL ||
 	                     listtype == GRAVITY_ADLISTS ||
 	                     listtype == GRAVITY_ADLISTS_BLOCK ||
-	                     listtype == GRAVITY_ADLISTS_ALLOW;
+	                     listtype == GRAVITY_ADLISTS_ALLOW ||
+                         listtype == GRAVITY_BULKLISTS ||
+                         listtype == GRAVITY_BULKLISTS_ADLISTS_BLOCK ||
+                         listtype == GRAVITY_BULKLISTS_ADLISTS_ALLOW ||
+                         listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT ||
+                         listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT ||
+                         listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX ||
+                         listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX;
 
 	// Begin transaction
 	const char *querystr = "BEGIN TRANSACTION;";
@@ -2014,6 +2108,20 @@ bool gravityDB_delFromTable(const enum gravity_list_type listtype, const cJSON* 
 	}
 	else if(listtype == GRAVITY_CLIENTS)
 		querystrs[0] = "DELETE FROM client WHERE ip IN (SELECT item FROM deltable);";
+    else if(listtype == GRAVITY_BULKLISTS_ADLISTS_BLOCK ||
+            listtype == GRAVITY_BULKLISTS_ADLISTS_ALLOW ||
+            listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT ||
+            listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT ||
+            listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX ||
+            listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX)
+    { // bulk lists
+		querystrs[0] = "DELETE FROM bulklist WHERE address IN (SELECT item FROM deltable WHERE type = 0) AND type = 0;";
+		querystrs[1] = "DELETE FROM bulklist WHERE address IN (SELECT item FROM deltable WHERE type = 1) AND type = 1;";
+		querystrs[2] = "DELETE FROM bulklist WHERE address IN (SELECT item FROM deltable WHERE type = 2) AND type = 2;";
+		querystrs[3] = "DELETE FROM bulklist WHERE address IN (SELECT item FROM deltable WHERE type = 3) AND type = 3;";
+		querystrs[3] = "DELETE FROM bulklist WHERE address IN (SELECT item FROM deltable WHERE type = 4) AND type = 4;";
+		querystrs[3] = "DELETE FROM bulklist WHERE address IN (SELECT item FROM deltable WHERE type = 5) AND type = 5;";
+    }
 	else // domainlist
 	{
 		querystrs[0] = "DELETE FROM domainlist WHERE domain IN (SELECT item FROM deltable WHERE type = 0) AND type = 0;";
@@ -2127,6 +2235,7 @@ bool gravityDB_readTable(const enum gravity_list_type listtype,
 		case GRAVITY_GROUPS:
 		case GRAVITY_CLIENTS:
 		case GRAVITY_ADLISTS:
+		case GRAVITY_BULKLISTS:
 		// Type is set in the SQL query directly
 		case GRAVITY_ADLISTS_BLOCK:
 		case GRAVITY_ADLISTS_ALLOW:
@@ -2198,6 +2307,21 @@ bool gravityDB_readTable(const enum gravity_list_type listtype,
 		                                     "(SELECT GROUP_CONCAT(group_id) FROM client_by_group g WHERE g.client_id = c.id) AS group_ids "
 		                                     "FROM client c%s;", filter);
 	}
+	else if(listtype == GRAVITY_BULKLISTS)
+    {
+		const char *filter = "";
+		if(item != NULL && item[0] != '\0')
+		{
+			if(exact)
+				filter = " AND address = :item";
+			else
+				filter = " AND address LIKE :item";
+		}
+		snprintf(querystr, buflen, "SELECT id,type,address,enabled,date_added,date_modified,comment,"
+		                                     "(SELECT GROUP_CONCAT(group_id) FROM bulklist_by_group g WHERE g.bulk_id = a.id) AS group_ids,"
+		                                     "date_updated,status "
+		                                     "FROM bulk a WHERE %s;", filter);
+    }
 	else if(listtype == GRAVITY_GRAVITY || listtype == GRAVITY_ANTIGRAVITY)
 	{
 		if(item != NULL && item[0] != '\0')
@@ -2368,6 +2492,45 @@ bool gravityDB_readTableGetRow(const enum gravity_list_type listtype, tablerow *
 							break;
 					}
 				}
+                else if(listtype == GRAVITY_BULKLISTS_ADLISTS_BLOCK ||
+                        listtype == GRAVITY_BULKLISTS_ADLISTS_ALLOW ||
+                        listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_EXACT ||
+                        listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_EXACT ||
+                        listtype == GRAVITY_BULKLISTS_DOMAINLIST_DENY_REGEX ||
+                        listtype == GRAVITY_BULKLISTS_DOMAINLIST_ALLOW_REGEX)
+                {
+					switch(row->type_int)
+					{
+						case 0:
+							row->type = "block";
+							row->kind = "list";
+							break;
+						case 1:
+							row->type = "allow";
+							row->kind = "list";
+							break;
+						case 2:
+							row->type = "deny";
+							row->kind = "exact";
+							break;
+						case 3:
+							row->type = "allow";
+							row->kind = "exact";
+							break
+						case 4:
+							row->type = "deny";
+							row->kind = "regex";
+							break;
+						case 5:
+							row->type = "allow";
+							row->kind = "regex";
+							break;
+						default:
+							row->type = "unknown";
+							row->kind = "unknown";
+							break;
+					}
+                }
 				else
 				{
 					row->type = "unknown";
@@ -2479,6 +2642,12 @@ bool gravityDB_edit_groups(const enum gravity_list_type listtype, cJSON *groups,
 			get_querystr = "SELECT id FROM adlist WHERE address = :item AND type = :type";
 		del_querystr = "DELETE FROM adlist_by_group WHERE adlist_id = :id;";
 		add_querystr = "INSERT INTO adlist_by_group (adlist_id,group_id) VALUES (:id,:gid);";
+	}
+	else if(listtype == GRAVITY_BULKLISTS)
+	{
+        get_querystr = "SELECT id FROM bulklist WHERE address = :item";
+		del_querystr = "DELETE FROM bulklist_by_group WHERE bulklist_id = :id;";
+		add_querystr = "INSERT INTO bulklist_by_group (bulklist_id,group_id) VALUES (:id,:gid);";
 	}
 	else // domainlist
 	{

@@ -590,6 +590,7 @@ void FTL_reload_all_domainlists(void)
 	counters->database.groups = gravityDB_count(GROUPS_TABLE);
 	counters->database.clients = gravityDB_count(CLIENTS_TABLE);
 	counters->database.lists = gravityDB_count(ADLISTS_TABLE);
+	counters->database.bulklists = gravityDB_count(BULKLISTS_TABLE);
 	counters->database.domains.allowed = gravityDB_count(DENIED_DOMAINS_TABLE);
 	counters->database.domains.denied = gravityDB_count(ALLOWED_DOMAINS_TABLE);
 
